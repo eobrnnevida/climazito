@@ -12,40 +12,40 @@ export default async function handler(req, res) {
   city = city.replace(/^!clima\s*/i, "").trim();
 
   if (!city) {
-    return res.status(200).send("Use: !clima <cidade> ou !clima <cidade> <estado> — ex: !clima nova fatima PR");
+    return res.status(200).send("Use: !clima <cidade> — ex: !clima Goiania ou !clima Nova Fatima PR");
   }
 
   try {
-    // Tenta buscar com count=5 para pegar variações e priorizar Brasil
-    const geoRes = await fetch(
-      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=5&language=pt&format=json`
+    // Sempre busca pelo Nominatim (OpenStreetMap) priorizando Brasil
+    const query = city + ", Brasil";
+    const nominatimRes = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=3&accept-language=pt-BR&countrycodes=br`,
+      { headers: { "User-Agent": "ClimaTwitchBot/1.0" } }
     );
-    const geoData = await geoRes.json();
+    const nominatimData = await nominatimRes.json();
 
-    if (!geoData.results || geoData.results.length === 0) {
-      // Tenta com Nominatim (OpenStreetMap) como fallback para cidades pequenas
-      const nominatimRes = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city + ", Brasil")}&format=json&limit=1&accept-language=pt-BR`,
-        { headers: { "User-Agent": "ClimaTwitchBot/1.0" } }
-      );
-      const nominatimData = await nominatimRes.json();
-
-      if (!nominatimData || nominatimData.length === 0) {
-        return res.status(200).send(`Cidade "${city}" nao encontrada. Tente: !clima nova fatima PR`);
-      }
-
+    if (nominatimData && nominatimData.length > 0) {
       const { lat, lon, display_name } = nominatimData[0];
-      const shortName = display_name.split(",").slice(0, 2).join(",").trim();
+      const parts = display_name.split(",");
+      const shortName = parts.slice(0, 2).join(",").trim();
       return await getWeather(parseFloat(lat), parseFloat(lon), shortName, lang, res);
     }
 
-    // Prioriza resultado do Brasil se houver
-    const brasil = geoData.results.find(r => r.country_code === "BR");
-    const result = brasil || geoData.results[0];
-    const { latitude, longitude, name, admin1, country } = result;
-    const cityName = admin1 ? `${name}, ${admin1}` : `${name}, ${country}`;
+    // Fallback: busca global sem restringir país
+    const nominatimGlobal = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city)}&format=json&limit=1&accept-language=pt-BR`,
+      { headers: { "User-Agent": "ClimaTwitchBot/1.0" } }
+    );
+    const globalData = await nominatimGlobal.json();
 
-    return await getWeather(latitude, longitude, cityName, lang, res);
+    if (globalData && globalData.length > 0) {
+      const { lat, lon, display_name } = globalData[0];
+      const parts = display_name.split(",");
+      const shortName = parts.slice(0, 2).join(",").trim();
+      return await getWeather(parseFloat(lat), parseFloat(lon), shortName, lang, res);
+    }
+
+    return res.status(200).send(`Cidade "${city}" nao encontrada. Tente outro nome.`);
 
   } catch (err) {
     return res.status(200).send("Erro ao buscar clima. Tente novamente.");
