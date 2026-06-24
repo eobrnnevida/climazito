@@ -1,68 +1,86 @@
+const ESTADOS = {
+  "AC":"Acre","AL":"Alagoas","AP":"Amapá","AM":"Amazonas","BA":"Bahia",
+  "CE":"Ceará","DF":"Distrito Federal","ES":"Espírito Santo","GO":"Goiás",
+  "MA":"Maranhão","MT":"Mato Grosso","MS":"Mato Grosso do Sul","MG":"Minas Gerais",
+  "PA":"Pará","PB":"Paraíba","PR":"Paraná","PE":"Pernambuco","PI":"Piauí",
+  "RJ":"Rio de Janeiro","RN":"Rio Grande do Norte","RS":"Rio Grande do Sul",
+  "RO":"Rondônia","RR":"Roraima","SC":"Santa Catarina","SP":"São Paulo",
+  "SE":"Sergipe","TO":"Tocantins"
+};
+
 export default async function handler(req, res) {
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
 
-  let city = req.query.city || req.query.q || req.query.query || req.query.text || "";
+  let input = req.query.city || req.query.q || req.query.query || req.query.text || "";
   const lang = req.query.lang || "pt-BR";
 
-  if (!city && req.query.command) {
+  if (!input && req.query.command) {
     const match = req.query.command.trim().match(/^!clima\s+(.+)$/i);
-    if (match) city = match[1].trim();
+    if (match) input = match[1].trim();
   }
 
-  city = city.replace(/^!clima\s*/i, "").trim();
+  input = input.replace(/^!clima\s*/i, "").trim();
 
-  if (!city) {
+  if (!input) {
     return res.status(200).send("Use: !clima <cidade> — ex: !clima Goiania ou !clima Nova Fatima PR");
   }
 
+  // Detecta se termina com sigla de estado (ex: "nova fatima PR")
+  let cityName = input;
+  let stateFilter = null;
+  const siglaMatch = input.match(/^(.+?)\s+([A-Z]{2})$/i);
+  if (siglaMatch && ESTADOS[siglaMatch[2].toUpperCase()]) {
+    cityName = siglaMatch[1].trim();
+    stateFilter = ESTADOS[siglaMatch[2].toUpperCase()];
+  }
+
   try {
-    // Sempre busca pelo Nominatim (OpenStreetMap) priorizando Brasil
-    const query = city + ", Brasil";
-    const nominatimRes = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=3&accept-language=pt-BR&countrycodes=br`,
-      { headers: { "User-Agent": "ClimaTwitchBot/1.0" } }
+    // Busca com count=10 para ter mais opções
+    const geoRes = await fetch(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=10&language=pt&format=json`
     );
-    const nominatimData = await nominatimRes.json();
+    const geoData = await geoRes.json();
 
-    if (nominatimData && nominatimData.length > 0) {
-      const { lat, lon, display_name } = nominatimData[0];
-      const parts = display_name.split(",");
-      const shortName = parts.slice(0, 2).join(",").trim();
-      return await getWeather(parseFloat(lat), parseFloat(lon), shortName, lang, res);
+    if (!geoData.results || geoData.results.length === 0) {
+      return res.status(200).send(`Cidade "${input}" nao encontrada. Tente: !clima Nova Fatima PR`);
     }
 
-    // Fallback: busca global sem restringir país
-    const nominatimGlobal = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city)}&format=json&limit=1&accept-language=pt-BR`,
-      { headers: { "User-Agent": "ClimaTwitchBot/1.0" } }
-    );
-    const globalData = await nominatimGlobal.json();
+    let result;
 
-    if (globalData && globalData.length > 0) {
-      const { lat, lon, display_name } = globalData[0];
-      const parts = display_name.split(",");
-      const shortName = parts.slice(0, 2).join(",").trim();
-      return await getWeather(parseFloat(lat), parseFloat(lon), shortName, lang, res);
+    if (stateFilter) {
+      // Se passou estado, filtra por ele
+      result = geoData.results.find(r =>
+        r.country_code === "BR" && r.admin1 && r.admin1.toLowerCase().includes(stateFilter.toLowerCase())
+      );
     }
 
-    return res.status(200).send(`Cidade "${city}" nao encontrada. Tente outro nome.`);
+    if (!result) {
+      // Prioriza Brasil
+      result = geoData.results.find(r => r.country_code === "BR");
+    }
+
+    if (!result) {
+      result = geoData.results[0];
+    }
+
+    const { latitude, longitude, name, admin1, country_code } = result;
+    const displayName = admin1 ? `${name}, ${admin1}` : `${name}, ${result.country}`;
+
+    const weatherRes = await fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weathercode,windspeed_10m,relativehumidity_2m&timezone=auto`
+    );
+    const weatherData = await weatherRes.json();
+    const current = weatherData.current;
+    const temp = Math.round(current.temperature_2m);
+    const humidity = current.relativehumidity_2m;
+    const wind = Math.round(current.windspeed_10m);
+    const desc = getDescription(current.weathercode, lang);
+
+    return res.status(200).send(`Clima em ${displayName}: ${desc}, ${temp}C | Umidade: ${humidity}% | Vento: ${wind} km/h`);
 
   } catch (err) {
     return res.status(200).send("Erro ao buscar clima. Tente novamente.");
   }
-}
-
-async function getWeather(lat, lon, cityName, lang, res) {
-  const weatherRes = await fetch(
-    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weathercode,windspeed_10m,relativehumidity_2m&timezone=auto`
-  );
-  const weatherData = await weatherRes.json();
-  const current = weatherData.current;
-  const temp = Math.round(current.temperature_2m);
-  const humidity = current.relativehumidity_2m;
-  const wind = Math.round(current.windspeed_10m);
-  const desc = getDescription(current.weathercode, lang);
-  return res.status(200).send(`Clima em ${cityName}: ${desc}, ${temp}C | Umidade: ${humidity}% | Vento: ${wind} km/h`);
 }
 
 function getDescription(code, lang) {
