@@ -18,52 +18,85 @@ export default async function handler(req, res) {
   try {
     let lat, lon, displayName;
 
-    // 1. Tenta achar no Brasil primeiro via Nominatim
-    const brRes = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(input)}&countrycodes=br&format=json&limit=1&accept-language=pt-BR`,
-      { headers: { "User-Agent": "ClimaTwitchBot/1.0 contact@clima.app" } }
-    );
-    const brData = await brRes.json();
+    // Função auxiliar para buscar no Nominatim
+    const nominatimSearch = async (query, countryCode) => {
+      const params = new URLSearchParams({
+        q: query,
+        format: "json",
+        limit: "5",
+        "accept-language": "pt-BR",
+        addressdetails: "1",
+      });
+      if (countryCode) params.set("countrycodes", countryCode);
 
-    if (brData && brData.length > 0) {
-      lat = parseFloat(brData[0].lat);
-      lon = parseFloat(brData[0].lon);
-      const parts = brData[0].display_name.split(",");
-      // Pega cidade e estado (primeiros 2-3 campos)
-      displayName = parts.slice(0, 2).join(",").trim();
-    } else {
-      // 2. Fallback: busca global (Tokyo, Lisboa, etc)
-      const globalRes = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(input)}&format=json&limit=1&accept-language=pt-BR`,
-        { headers: { "User-Agent": "ClimaTwitchBot/1.0 contact@clima.app" } }
-      );
-      const globalData = await globalRes.json();
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
+        headers: {
+          "User-Agent": "ClimaTwitchBot/1.0",
+          "Accept-Language": "pt-BR,pt;q=0.9",
+        },
+      });
+      return r.json();
+    };
 
-      if (!globalData || globalData.length === 0) {
-        return res.status(200).send(`Cidade "${input}" nao encontrada. Tente outro nome.`);
-      }
+    // 1. Busca no Brasil primeiro
+    let results = await nominatimSearch(input, "br");
 
-      lat = parseFloat(globalData[0].lat);
-      lon = parseFloat(globalData[0].lon);
-      const parts = globalData[0].display_name.split(",");
-      displayName = parts.slice(0, 2).join(",").trim();
+    if (!results || results.length === 0) {
+      // 2. Tenta com ", Brasil" no final
+      results = await nominatimSearch(input + ", Brasil", "br");
     }
 
-    // 3. Busca clima com as coordenadas
+    if (!results || results.length === 0) {
+      // 3. Busca global (para cidades fora do Brasil)
+      results = await nominatimSearch(input, null);
+    }
+
+    if (!results || results.length === 0) {
+      return res.status(200).send(`"${input}" nao encontrado. Tente: !clima Goiania ou !clima Nova Fatima PR`);
+    }
+
+    const best = results[0];
+    lat = parseFloat(best.lat);
+    lon = parseFloat(best.lon);
+
+    // Monta nome de exibição a partir do addressdetails
+    const addr = best.address || {};
+    const cidade = addr.city || addr.town || addr.village || addr.municipality || addr.county || "";
+    const estado = addr.state || "";
+    const pais = addr.country || "";
+
+    if (cidade && estado) {
+      displayName = `${cidade}, ${estado}`;
+    } else if (cidade && pais) {
+      displayName = `${cidade}, ${pais}`;
+    } else {
+      // fallback: primeiros campos do display_name
+      displayName = best.display_name.split(",").slice(0, 2).join(",").trim();
+    }
+
+    // Busca clima
     const weatherRes = await fetch(
       `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weathercode,windspeed_10m,relativehumidity_2m&timezone=auto`
     );
     const weatherData = await weatherRes.json();
+
+    if (!weatherData.current) {
+      return res.status(200).send("Erro ao buscar clima. Tente novamente.");
+    }
+
     const current = weatherData.current;
     const temp = Math.round(current.temperature_2m);
     const humidity = current.relativehumidity_2m;
     const wind = Math.round(current.windspeed_10m);
     const desc = getDescription(current.weathercode, lang);
 
-    return res.status(200).send(`Clima em ${displayName}: ${desc}, ${temp}C | Umidade: ${humidity}% | Vento: ${wind} km/h`);
+    return res.status(200).send(
+      `Clima em ${displayName}: ${desc}, ${temp}C | Umidade: ${humidity}% | Vento: ${wind} km/h`
+    );
 
   } catch (err) {
-    return res.status(200).send("Erro ao buscar clima. Tente novamente.");
+    console.error(err);
+    return res.status(200).send("Erro interno. Tente novamente em instantes.");
   }
 }
 
