@@ -1,13 +1,3 @@
-const ESTADOS = {
-  "AC":"Acre","AL":"Alagoas","AP":"Amapá","AM":"Amazonas","BA":"Bahia",
-  "CE":"Ceará","DF":"Distrito Federal","ES":"Espírito Santo","GO":"Goiás",
-  "MA":"Maranhão","MT":"Mato Grosso","MS":"Mato Grosso do Sul","MG":"Minas Gerais",
-  "PA":"Pará","PB":"Paraíba","PR":"Paraná","PE":"Pernambuco","PI":"Piauí",
-  "RJ":"Rio de Janeiro","RN":"Rio Grande do Norte","RS":"Rio Grande do Sul",
-  "RO":"Rondônia","RR":"Roraima","SC":"Santa Catarina","SP":"São Paulo",
-  "SE":"Sergipe","TO":"Tocantins"
-};
-
 export default async function handler(req, res) {
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
 
@@ -25,49 +15,43 @@ export default async function handler(req, res) {
     return res.status(200).send("Use: !clima <cidade> — ex: !clima Goiania ou !clima Nova Fatima PR");
   }
 
-  // Detecta se termina com sigla de estado (ex: "nova fatima PR")
-  let cityName = input;
-  let stateFilter = null;
-  const siglaMatch = input.match(/^(.+?)\s+([A-Z]{2})$/i);
-  if (siglaMatch && ESTADOS[siglaMatch[2].toUpperCase()]) {
-    cityName = siglaMatch[1].trim();
-    stateFilter = ESTADOS[siglaMatch[2].toUpperCase()];
-  }
-
   try {
-    // Busca com count=10 para ter mais opções
-    const geoRes = await fetch(
-      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=10&language=pt&format=json`
+    let lat, lon, displayName;
+
+    // 1. Tenta achar no Brasil primeiro via Nominatim
+    const brRes = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(input)}&countrycodes=br&format=json&limit=1&accept-language=pt-BR`,
+      { headers: { "User-Agent": "ClimaTwitchBot/1.0 contact@clima.app" } }
     );
-    const geoData = await geoRes.json();
+    const brData = await brRes.json();
 
-    if (!geoData.results || geoData.results.length === 0) {
-      return res.status(200).send(`Cidade "${input}" nao encontrada. Tente: !clima Nova Fatima PR`);
-    }
-
-    let result;
-
-    if (stateFilter) {
-      // Se passou estado, filtra por ele
-      result = geoData.results.find(r =>
-        r.country_code === "BR" && r.admin1 && r.admin1.toLowerCase().includes(stateFilter.toLowerCase())
+    if (brData && brData.length > 0) {
+      lat = parseFloat(brData[0].lat);
+      lon = parseFloat(brData[0].lon);
+      const parts = brData[0].display_name.split(",");
+      // Pega cidade e estado (primeiros 2-3 campos)
+      displayName = parts.slice(0, 2).join(",").trim();
+    } else {
+      // 2. Fallback: busca global (Tokyo, Lisboa, etc)
+      const globalRes = await fetch(
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(input)}&format=json&limit=1&accept-language=pt-BR`,
+        { headers: { "User-Agent": "ClimaTwitchBot/1.0 contact@clima.app" } }
       );
+      const globalData = await globalRes.json();
+
+      if (!globalData || globalData.length === 0) {
+        return res.status(200).send(`Cidade "${input}" nao encontrada. Tente outro nome.`);
+      }
+
+      lat = parseFloat(globalData[0].lat);
+      lon = parseFloat(globalData[0].lon);
+      const parts = globalData[0].display_name.split(",");
+      displayName = parts.slice(0, 2).join(",").trim();
     }
 
-    if (!result) {
-      // Prioriza Brasil
-      result = geoData.results.find(r => r.country_code === "BR");
-    }
-
-    if (!result) {
-      result = geoData.results[0];
-    }
-
-    const { latitude, longitude, name, admin1, country_code } = result;
-    const displayName = admin1 ? `${name}, ${admin1}` : `${name}, ${result.country}`;
-
+    // 3. Busca clima com as coordenadas
     const weatherRes = await fetch(
-      `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weathercode,windspeed_10m,relativehumidity_2m&timezone=auto`
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weathercode,windspeed_10m,relativehumidity_2m&timezone=auto`
     );
     const weatherData = await weatherRes.json();
     const current = weatherData.current;
